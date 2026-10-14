@@ -8,6 +8,13 @@ import subprocess
 from tkinter import Tk, Toplevel, Button, Label, Entry, Frame, messagebox, Canvas, Scrollbar, filedialog, ttk, Menu, simpledialog
 from pynput import mouse, keyboard
 
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
 class ScratchActionRecorder:
     def __init__(self, root):
         self.root = root
@@ -24,6 +31,7 @@ class ScratchActionRecorder:
         self.last_clicked_index = None
         self.last_action_time = 0.0
 
+        # Workspace & Drag Variables
         self.workspace_dir = os.getcwd()
         self.file_map = {} 
         self.drag_data = {"items": [], "y": 0} 
@@ -42,6 +50,8 @@ class ScratchActionRecorder:
             "wait": "#FF9F1C",     
             "click": "#43AA8B",    
             "keypress": "#9B5DE5", 
+            "key_down": "#9B5DE5", 
+            "key_up": "#9B5DE5", 
             "scroll": "#F15BB5",
             "link": "#EF476F",
             "set_var": "#2C3E50",
@@ -109,6 +119,7 @@ class ScratchActionRecorder:
         Button(file_frame, text="New Flow", bg="#27ae60", fg="white", relief="flat", command=self.create_new_flow).pack(side="left", padx=5)
         Button(file_frame, text="Load External", bg="#8e44ad", fg="white", relief="flat", command=self.import_external_file).pack(side="left", padx=5)
         Button(file_frame, text="Workspace", bg="#bdc3c7", relief="flat", command=self.set_workspace).pack(side="left", padx=5)
+        Button(file_frame, text="Close Flow", bg="#e74c3c", fg="white", relief="flat", command=self.close_current_file).pack(side="left", padx=5)
         
         self.btn_toggle_extras = Button(file_frame, text="Advanced Actions...", bg="#34495e", fg="white", relief="flat", command=self.toggle_extras)
         self.btn_toggle_extras.pack(side="right", padx=5)
@@ -119,10 +130,12 @@ class ScratchActionRecorder:
         self.basics_frame = Frame(self.editor_container, bg="#ecf0f1", bd=1, relief="groove")
         self.basics_visible = False
         
-        Button(self.basics_frame, text="Add Wait", width=12, command=lambda: self.insert_action({"type": "wait", "duration": 1.0})).pack(side="left", padx=5, pady=5)
-        Button(self.basics_frame, text="Add Click", width=12, command=lambda: self.insert_action({"type": "click", "x": 0, "y": 0, "button": "left"})).pack(side="left", padx=5, pady=5)
-        Button(self.basics_frame, text="Add Scroll", width=12, command=lambda: self.insert_action({"type": "scroll", "x": 0, "y": 0, "dx": 0, "dy": -100})).pack(side="left", padx=5, pady=5)
-        Button(self.basics_frame, text="Add Keypress", width=12, command=lambda: self.insert_action({"type": "keypress", "key": "Key.enter"})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Add Wait", width=9, command=lambda: self.insert_action({"type": "wait", "duration": 1.0})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Add Click", width=9, command=lambda: self.insert_action({"type": "click", "x": 0, "y": 0, "button": "left", "clicks": 1, "path": []})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Add Scroll", width=9, command=lambda: self.insert_action({"type": "scroll", "x": 0, "y": 0, "dx": 0, "dy": -100, "path": []})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Key Press", width=9, command=lambda: self.insert_action({"type": "keypress", "key": "Key.enter"})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Key Hold", width=9, command=lambda: self.insert_action({"type": "key_down", "key": "Key.shift"})).pack(side="left", padx=5, pady=5)
+        Button(self.basics_frame, text="Key Release", width=10, command=lambda: self.insert_action({"type": "key_up", "key": "Key.shift"})).pack(side="left", padx=5, pady=5)
 
         self.extras_frame = Frame(self.editor_container, bg="#ecf0f1", bd=1, relief="groove")
         self.extras_visible = False
@@ -130,7 +143,7 @@ class ScratchActionRecorder:
         Button(self.extras_frame, text="Add If", width=9, command=lambda: self.insert_action({"type": "if", "condition": "x == 1"})).pack(side="left", padx=2, pady=5)
         Button(self.extras_frame, text="Add Else", width=9, command=lambda: self.insert_action({"type": "else"})).pack(side="left", padx=2, pady=5)
         Button(self.extras_frame, text="Add While", width=9, command=lambda: self.insert_action({"type": "while", "condition": "x == 1"})).pack(side="left", padx=2, pady=5)
-        Button(self.extras_frame, text="Add For", width=9, command=lambda: self.insert_action({"type": "for", "statement": ""})).pack(side="left", padx=2, pady=5)
+        Button(self.extras_frame, text="Add For", width=9, command=lambda: self.insert_action({"type": "for", "statement": "i in range(5)"})).pack(side="left", padx=2, pady=5)
         Button(self.extras_frame, text="Add End", width=9, bg="#bdc3c7", command=lambda: self.insert_action({"type": "end"})).pack(side="left", padx=2, pady=5)
         Label(self.extras_frame, text="|", bg="#ecf0f1", fg="#7f8c8d").pack(side="left", padx=5)
         Button(self.extras_frame, text="Set Variable", width=11, command=lambda: self.insert_action({"type": "set_var", "var_name": "x", "var_value": "True"})).pack(side="left", padx=2, pady=5)
@@ -214,6 +227,17 @@ class ScratchActionRecorder:
         self.refresh_workspace()
         self._refresh_blocks()
         self._update_title()
+
+    def close_current_file(self):
+        if not self.current_filepath and not self.recorded_actions:
+            return
+        if messagebox.askyesno("Close Flow", "Are you sure you want to close the current flow?"):
+            self.current_filepath = None
+            self.recorded_actions.clear()
+            self.selected_indices = []
+            self.last_clicked_index = None
+            self._update_title()
+            self._refresh_blocks()
 
     def import_external_file(self):
         source_path = filedialog.askopenfilename(filetypes=[("JSON Flow Files", "*.json")], title="Select External Flow")
@@ -471,9 +495,9 @@ class ScratchActionRecorder:
 
         keys_to_edit = []
         if action["type"] == "wait": keys_to_edit = ["duration"]
-        elif action["type"] == "click": keys_to_edit = ["x", "y", "button"]
+        elif action["type"] == "click": keys_to_edit = ["x", "y", "button", "clicks"]
         elif action["type"] == "scroll": keys_to_edit = ["x", "y", "dx", "dy"]
-        elif action["type"] == "keypress": keys_to_edit = ["key"]
+        elif action["type"] in ["keypress", "key_down", "key_up"]: keys_to_edit = ["key"]
         elif action["type"] == "link": keys_to_edit = ["filepath"]
         elif action["type"] == "set_var": keys_to_edit = ["var_name", "var_value"]
         elif action["type"] in ["if", "while"]: keys_to_edit = ["condition"]
@@ -491,16 +515,22 @@ class ScratchActionRecorder:
             
             if k == "key":
                 ent = ttk.Combobox(sub_frame, width=22, values=[
-                    "Key.enter", "Key.space", "Key.esc", "Key.tab", 
+                    "Key.enter", "Key.space", "Key.cmd", "Key.esc", "Key.tab", 
                     "Key.shift", "Key.ctrl", "Key.alt", 
                     "Key.backspace", "Key.delete", 
-                    "Key.up", "Key.down", "Key.left", "Key.right"
+                    "Key.up", "Key.down", "Key.left", "Key.right",
+                    "Key.ctrl + c", "Key.ctrl + v", "Key.ctrl + a"
                 ])
                 ent.insert(0, str(action.get(k, "")))
                 ent.pack(side="left")
+            elif k == "button":
+                ent = ttk.Combobox(sub_frame, width=22, values=["left", "right", "middle"])
+                ent.insert(0, str(action.get(k, "left")))
+                ent.pack(side="left")
             else:
                 ent = Entry(sub_frame, width=25)
-                ent.insert(0, str(action.get(k, "")))
+                default_val = action.get(k, 1 if k == "clicks" else "")
+                ent.insert(0, str(default_val))
                 ent.pack(side="left")
             
             entries[k] = ent
@@ -509,7 +539,7 @@ class ScratchActionRecorder:
             try:
                 for k in keys_to_edit:
                     val = entries[k].get()
-                    if k in ["x", "y", "dx", "dy"]: action[k] = int(val)
+                    if k in ["x", "y", "dx", "dy", "clicks"]: action[k] = int(val)
                     elif k == "duration": action[k] = float(val)
                     else: action[k] = val 
                 dlg.destroy()
@@ -635,23 +665,78 @@ class ScratchActionRecorder:
                 if t == "wait":
                     time.sleep(action["duration"])
                     ip += 1
+                    
                 elif t == "click":
-                    self.mouse_ctrl.position = (action["x"], action["y"])
+                    path = action.get("path", [])
+                    if not path:
+                        cx, cy = self.mouse_ctrl.position
+                        tx, ty = action["x"], action["y"]
+                        steps = 15
+                        for i in range(1, steps + 1):
+                            ix = cx + (tx - cx) * (i / steps)
+                            iy = cy + (ty - cy) * (i / steps)
+                            curr_x, curr_y = self.mouse_ctrl.position
+                            self.mouse_ctrl.move(int(ix - curr_x), int(iy - curr_y))
+                            time.sleep(0.01)
+                    else:
+                        for px, py in path:
+                            cx, cy = self.mouse_ctrl.position
+                            self.mouse_ctrl.move(int(px - cx), int(py - cy))
+                            time.sleep(0.015)
+                            
+                    cx, cy = self.mouse_ctrl.position
+                    self.mouse_ctrl.move(int(action["x"] - cx), int(action["y"] - cy))
                     time.sleep(0.05)
+                    
                     btn = mouse.Button.right if "right" in action["button"] else mouse.Button.middle if "middle" in action["button"] else mouse.Button.left
-                    self.mouse_ctrl.click(btn, 1)
+                    self.mouse_ctrl.click(btn, action.get("clicks", 1))
                     ip += 1
+                    
                 elif t == "scroll":
-                    self.mouse_ctrl.position = (action["x"], action["y"])
+                    path = action.get("path", [])
+                    if path:
+                        for px, py in path:
+                            cx, cy = self.mouse_ctrl.position
+                            self.mouse_ctrl.move(int(px - cx), int(py - cy))
+                            time.sleep(0.015)
+                            
+                    cx, cy = self.mouse_ctrl.position
+                    self.mouse_ctrl.move(int(action["x"] - cx), int(action["y"] - cy))
+                    time.sleep(0.05)
                     self.mouse_ctrl.scroll(action["dx"], action["dy"])
                     ip += 1
+                    
                 elif t == "keypress":
-                    k = action["key"]
-                    if k.startswith("Key."): k = getattr(keyboard.Key, k.replace("Key.", ""), None)
-                    else: k = k.strip("'")
-                    if k:
-                        self.keyboard_ctrl.press(k)
-                        self.keyboard_ctrl.release(k)
+                    keys_to_press = [k.strip() for k in action["key"].split("+")]
+                    parsed_keys = []
+                    for k in keys_to_press:
+                        if k.startswith("Key."): parsed_keys.append(getattr(keyboard.Key, k.replace("Key.", ""), None))
+                        else: parsed_keys.append(k.strip("'"))
+                    
+                    for k in parsed_keys:
+                        if k: self.keyboard_ctrl.press(k)
+                    for k in reversed(parsed_keys):
+                        if k: self.keyboard_ctrl.release(k)
+                    ip += 1
+
+                elif t == "key_down":
+                    keys_to_press = [k.strip() for k in action["key"].split("+")]
+                    parsed_keys = []
+                    for k in keys_to_press:
+                        if k.startswith("Key."): parsed_keys.append(getattr(keyboard.Key, k.replace("Key.", ""), None))
+                        else: parsed_keys.append(k.strip("'"))
+                    for k in parsed_keys:
+                        if k: self.keyboard_ctrl.press(k)
+                    ip += 1
+
+                elif t == "key_up":
+                    keys_to_press = [k.strip() for k in action["key"].split("+")]
+                    parsed_keys = []
+                    for k in keys_to_press:
+                        if k.startswith("Key."): parsed_keys.append(getattr(keyboard.Key, k.replace("Key.", ""), None))
+                        else: parsed_keys.append(k.strip("'"))
+                    for k in reversed(parsed_keys):
+                        if k: self.keyboard_ctrl.release(k)
                     ip += 1
                     
                 elif t == "set_var":
@@ -742,7 +827,7 @@ class ScratchActionRecorder:
         messagebox.showinfo("Execution Finished", "Finished executing all actions.")
 
     # ==========================================
-    # RECORDING ENGINE
+    # RECORDING ENGINE 
     # ==========================================
 
     def _open_mini_ui(self):
@@ -764,16 +849,32 @@ class ScratchActionRecorder:
         return (wx - margin <= x <= wx + ww + margin) and (wy - margin <= y <= wy + wh + margin)
 
     def start_recording(self):
-        if self.recorded_actions and not self.current_filepath:
+        if self.current_filepath:
+            ans = messagebox.askyesnocancel(
+                "Record Option", 
+                "You currently have a flow open. Do you want to continue recording on this existing flow?\n\nYes = Continue existing recording\nNo = Start completely new recording\nCancel = Abort"
+            )
+            if ans is None:
+                return
+            elif ans is False:
+                self.recorded_actions.clear()
+                self.current_filepath = None
+                self._update_title()
+        elif self.recorded_actions:
             if not messagebox.askyesno("Warning", "Starting a new recording will clear your unsaved canvas.\n\nProceed?"):
                 return
+            self.recorded_actions.clear()
                 
         self.selected_indices = []
+        self.current_path = []
+        self.last_move_time = time.time()
+        
         self.root.withdraw()
         self._open_mini_ui()
         self.is_recording = True
         self.last_action_time = time.time()
-        self.mouse_listener = mouse.Listener(on_click=self._on_click, on_scroll=self._on_scroll)
+        
+        self.mouse_listener = mouse.Listener(on_click=self._on_click, on_scroll=self._on_scroll, on_move=self._on_move)
         self.keyboard_listener = keyboard.Listener(on_press=self._on_press)
         self.mouse_listener.start()
         self.keyboard_listener.start()
@@ -784,15 +885,38 @@ class ScratchActionRecorder:
         if elapsed >= 0.05: self.recorded_actions.append({"type": "wait", "duration": elapsed})
         self.last_action_time = now
 
+    def _on_move(self, x, y):
+        if not self.is_recording: return
+        now = time.time()
+        if now - getattr(self, 'last_move_time', 0) > 0.015:
+            if not hasattr(self, 'current_path'): self.current_path = []
+            self.current_path.append((int(x), int(y)))
+            self.last_move_time = now
+
     def _on_click(self, x, y, button, pressed):
         if not self.is_recording or not pressed or self._is_inside_mini_window(x, y): return
         self._log_idle_wait()
-        self.recorded_actions.append({"type": "click", "x": int(x), "y": int(y), "button": button.name})
+        
+        path_copy = getattr(self, 'current_path', []).copy()
+        self.current_path = []
+        
+        if len(path_copy) > 50:
+            step = len(path_copy) / 50.0
+            path_copy = [path_copy[int(i * step)] for i in range(50)]
+            
+        self.recorded_actions.append({"type": "click", "x": int(x), "y": int(y), "button": button.name, "clicks": 1, "path": path_copy})
 
     def _on_scroll(self, x, y, dx, dy):
         if not self.is_recording or self._is_inside_mini_window(x, y): return
         self._log_idle_wait()
-        self.recorded_actions.append({"type": "scroll", "x": int(x), "y": int(y), "dx": dx, "dy": dy})
+        
+        path_copy = getattr(self, 'current_path', []).copy()
+        self.current_path = []
+        if len(path_copy) > 50:
+            step = len(path_copy) / 50.0
+            path_copy = [path_copy[int(i * step)] for i in range(50)]
+            
+        self.recorded_actions.append({"type": "scroll", "x": int(x), "y": int(y), "dx": dx, "dy": dy, "path": path_copy})
 
     def _on_press(self, key):
         if not self.is_recording: return
@@ -812,8 +936,28 @@ class ScratchActionRecorder:
 
         if self.mini_window: self.mini_window.destroy()
         self.root.deiconify()
+        
+        if not self.current_filepath and self.recorded_actions:
+            name = simpledialog.askstring("Save Recording", "Enter a name for this recording:\n(Leave blank to auto-generate a name)")
+            
+            if not name or not name.strip():
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                name = f"RecordedFlow_{timestamp}.json"
+            elif not name.endswith(".json"):
+                name += ".json"
+                
+            filepath = os.path.join(self.workspace_dir, name)
+            
+            if os.path.exists(filepath) and name != f"RecordedFlow_{time.strftime('%Y%m%d_%H%M%S')}.json":
+                base, ext = os.path.splitext(name)
+                filepath = os.path.join(self.workspace_dir, f"{base}_{time.strftime('%H%M%S')}{ext}")
+                
+            self.current_filepath = filepath
+            self._update_title()
+            
         self._refresh_blocks()
         self._auto_save()
+        self.refresh_workspace()
         
         if not self.editor_visible: self.show_editor()
 
@@ -945,9 +1089,13 @@ class ScratchActionRecorder:
     def _format_action(self, action):
         t = action["type"]
         if t == "wait": return f"Wait for {action['duration']}s"
-        elif t == "click": return f"Click {action['button']} at X:{action['x']}, Y:{action['y']}"
+        elif t == "click": 
+            c_str = f" {action.get('clicks', 1)}x" if action.get('clicks', 1) > 1 else ""
+            return f"Click{c_str} {action['button']} at X:{action['x']}, Y:{action['y']}"
         elif t == "scroll": return f"Scroll {'Up' if action['dy'] > 0 else 'Down'} at X:{action['x']}, Y:{action['y']}"
         elif t == "keypress": return f"Press '{action['key']}'"
+        elif t == "key_down": return f"Hold '{action['key']}'"
+        elif t == "key_up": return f"Release '{action['key']}'"
         elif t == "link": return f"RUN FLOW: {os.path.basename(action['filepath'])}"
         elif t == "set_var": return f"Set {action['var_name']} = {action['var_value']}"
         elif t == "if": return f"If ({action['condition']}):"
